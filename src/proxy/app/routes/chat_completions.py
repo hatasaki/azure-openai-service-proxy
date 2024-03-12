@@ -12,6 +12,9 @@ from ..config import Deployment
 from ..openai_async import OpenAIAsyncManager
 from .request_manager import RequestManager
 
+import sys
+import json
+import httpx
 
 class ChatCompletionsRequest(BaseModel):
     """OpenAI Chat Request"""
@@ -76,6 +79,30 @@ class ChatCompletions(RequestManager):
             if isinstance(completion, AsyncGenerator):
                 return StreamingResponse(completion)
 
+            # function_callingの応答がある場合の処理を追加
+            if 'function_call' in completion['choices'][0]['message']:
+                func_name = completion['choices'][0]['message']['function_call']['name']
+                args = json.loads(completion['choices'][0]['message']['function_call']['arguments'])
+                #print(f"name: {func_name}, args:{args}", file=sys.stderr)
+
+                # function_callingに対応する実際の関数リスト
+                func_list=[self.search_hotels, self.search_restaurants]
+                # 関数名とそのインデックスをマッピングする辞書を作成
+                func_dict = {func.__name__: idx for idx, func in enumerate(func_list)}
+
+                if func_name in func_dict:
+                    print(f"function {func_name} matched", file=sys.stderr)
+                    # フロントエンドの表示を制御するため、function_call 応答を削除
+                    del completion['choices'][0]['message']['function_call']
+                    completion['choices'][0]['message']["finish_reason"] = "stop"                    
+                    # レスポンスに関数の結果を返す
+                    try:
+                        completion['choices'][0]['message']['content'] = await func_list[func_dict[func_name]](**args)
+                    except:
+                        print(f"function error", file=sys.stderr)
+
+            #print(completion, file=sys.stderr)
+
             response.status_code = status_code
             return completion
 
@@ -132,3 +159,18 @@ class ChatCompletions(RequestManager):
         # check the presence_penalty is between 0 and 1
         if model.presence_penalty is not None and not 0 <= model.presence_penalty <= 1:
             self.report_exception("Oops, presence_penalty must be between 0 and 1.", 400)
+
+    async def search_hotels(self, **args)  -> Any:
+            """search_hotels関数の定義。引数をプリントするだけ。"""
+            location = args["location"]
+            price = args["price"]
+            features = args["features"]
+            print(httpx.post('http://search-hotels', json=args), file=sys.stderr)
+            #print(f"ARO Hotel をお勧めします(Searching for hotels in {location}, with max price {price}, and features {features})", file=sys.stdout)
+            return f"ARO Hotel をお勧めします (引数: {args})" #(Searching for hotels in {location}, with max price {price}, and features {features})"
+
+    async def search_restaurants(self, **args)  -> Any:
+            category = args["category"]
+            budget = args["budget"]
+            print(httpx.post('http://search-restaurants', json=args), file=sys.stderr)
+            return f"AOAI レストランをお勧めします (引数: {args})" #(Searching for restaurants with category is {category}, budget in {budget})"
